@@ -1,0 +1,297 @@
+# Instructions for Refactoring sbsign to Support OpenSSL Engines
+
+## Objective
+Modify the `sbsign` tool to support OpenSSL engines for UEFI Secure Boot signing, enabling the use of hardware security modules (HSMs) and cloud-based key services like Azure Key Vault without exposing private keys locally.
+
+## Background
+The current `sbsign` implementation expects direct access to private key files and uses standard OpenSSL RSA functions that bypass engine implementations. This prevents secure signing scenarios where private keys are stored in HSMs or cloud services.
+
+## Current Problem
+When using `sbsign` with an OpenSSL engine, it fails with:
+```
+dataFinal failed
+error:020000B3:rsa routines:rsa_ossl_private_encrypt:missing private key
+error:1C880004:Provider routines:rsa_sign:RSA lib
+```
+
+This occurs because `sbsign` calls OpenSSL's standard RSA functions rather than engine-provided methods.
+
+## Required Changes
+
+### 1. Add Engine Support to Command Line Interface
+
+**File**: `src/sbsign.c` or equivalent main file
+
+**Changes needed**:
+- Add command-line options for engine support:
+  ```c
+  static struct option options[] = {
+      // ... existing options ...
+      { "engine", required_argument, NULL, 'e' },
+      { "keyform", required_argument, NULL, 'f' },
+      { NULL, 0, NULL, 0 }
+  };
+  ```
+
+- Update help text to document engine usage:
+  ```c
+  static void usage(void)
+  {
+      printf("Usage: sbsign [options] --key <keyfile> --cert <certfile> <efi-binary>\n");
+      printf("   --engine <id>      Use OpenSSL engine with specified ID\n");
+      printf("   --keyform <format> Key format: PEM, DER, or engine\n");
+      // ... existing help ...
+  }
+  ```
+
+### 2. Modify Key Loading Logic
+
+**File**: Key loading function (likely in `src/fileio.c` or `src/sbsign.c`)
+
+**Current problematic pattern**:
+```c
+// Current implementation loads key directly
+EVP_PKEY *load_private_key(const char *filename)
+{
+    FILE *f = fopen(filename, "r");
+    return PEM_read_PrivateKey(f, NULL, NULL, NULL);
+}
+```
+
+**Required refactoring**:
+```c
+EVP_PKEY *load_private_key(const char *key_spec, const char *engine_id, 
+                          const char *keyform)
+{
+    EVP_PKEY *pkey = NULL;
+    ENGINE *engine = NULL;
+    
+    if (engine_id) {
+        // Load and initialize engine
+        ENGINE_load_builtin_engines();
+        engine = ENGINE_by_id(engine_id);
+        if (!engine) {
+            fprintf(stderr, "Failed to load engine: %s\n", engine_id);
+            return NULL;
+        }
+        
+        if (!ENGINE_init(engine)) {
+            fprintf(stderr, "Failed to initialize engine: %s\n", engine_id);
+            ENGINE_free(engine);
+            return NULL;
+        }
+        
+        // Load key using engine
+        if (keyform && strcmp(keyform, "engine") == 0) {
+            pkey = ENGINE_load_private_key(engine, key_spec, NULL, NULL);
+            if (!pkey) {
+                fprintf(stderr, "Failed to load private key from engine\n");
+            }
+        }
+        
+        ENGINE_finish(engine);
+        ENGINE_free(engine);
+    } else {
+        // Traditional file-based key loading
+        FILE *f = fopen(key_spec, "r");
+        if (f) {
+            pkey = PEM_read_PrivateKey(f, NULL, NULL, NULL);
+            fclose(f);
+        }
+    }
+    
+    return pkey;
+}
+```
+
+### 3. Update PKCS#7 Signing Context
+
+**File**: Main signing function (likely `src/sign.c` or similar)
+
+**Current issue**: The signing context may not preserve engine association.
+
+**Required changes**:
+```c
+int sign_efi_binary(const char *input_file, const char *output_file,
+                   EVP_PKEY *pkey, X509 *cert, const char *engine_id)
+{
+    PKCS7 *p7 = NULL;
+    BIO *data_bio = NULL, *sig_bio = NULL;
+    int rc = -1;
+    
+    // Ensure engine is loaded for signing operations
+    ENGINE *engine = NULL;
+    if (engine_id) {
+        engine = ENGINE_by_id(engine_id);
+        if (engine) {
+            ENGINE_init(engine);
+            // Set default engine for RSA operations
+            ENGINE_set_default_RSA(engine);
+            ENGINE_set_default(engine, ENGINE_METHOD_ALL);
+        }
+    }
+    
+    // Create PKCS#7 signature
+    p7 = PKCS7_new();
+    PKCS7_set_type(p7, NID_pkcs7_signed);
+    
+    // Add signer info - this should now use engine methods
+    PKCS7_SIGNER_INFO *si = PKCS7_add_signature(p7, cert, pkey, EVP_sha256());
+    if (!si) {
+        fprintf(stderr, "Failed to add signature\n");
+        goto cleanup;
+    }
+    
+    // Set authenticated attributes for Authenticode
+    PKCS7_add_signed_attribute(si, NID_pkcs9_contentTypes, 
+                              V_ASN1_OBJECT, OBJ_nid2obj(NID_ms_code_ind));
+    
+    // ... rest of signing logic ...
+    
+    // Finalize signature - this calls the engine's signing methods
+    if (!PKCS7_final(p7, data_bio, PKCS7_BINARY)) {
+        fprintf(stderr, "Failed to finalize PKCS#7 signature\n");
+        goto cleanup;
+    }
+    
+    rc = 0;
+
+cleanup:
+    if (engine) {
+        ENGINE_finish(engine);
+        ENGINE_free(engine);
+    }
+    if (p7) PKCS7_free(p7);
+    if (data_bio) BIO_free(data_bio);
+    if (sig_bio) BIO_free(sig_bio);
+    
+    return rc;
+}
+```
+
+### 4. Handle Engine Initialization Globally
+
+**File**: Main function or initialization code
+
+**Add engine setup**:
+```c
+int main(int argc, char **argv)
+{
+    const char *engine_id = NULL;
+    const char *keyform = "PEM";
+    const char *key_spec = NULL;
+    
+    // Parse command line arguments
+    // ... existing argument parsing ...
+    
+    // Initialize OpenSSL
+    OpenSSL_add_all_algorithms();
+    ERR_load_crypto_strings();
+    
+    // Initialize engines if needed
+    if (engine_id) {
+        ENGINE_load_builtin_engines();
+        ENGINE_register_all_complete();
+    }
+    
+    // Load key with engine support
+    EVP_PKEY *pkey = load_private_key(key_spec, engine_id, keyform);
+    if (!pkey) {
+        fprintf(stderr, "Failed to load private key\n");
+        return 1;
+    }
+    
+    // ... rest of main function ...
+    
+    EVP_PKEY_free(pkey);
+    
+    // Cleanup engines
+    if (engine_id) {
+        ENGINE_cleanup();
+    }
+    
+    return 0;
+}
+```
+
+### 5. Update Build Configuration
+
+**File**: `Makefile` or `CMakeLists.txt`
+
+**Ensure engine support is linked**:
+```makefile
+# Add engine libraries
+LDFLAGS += -lcrypto -lssl
+
+# For dynamic engine loading
+CFLAGS += -DOPENSSL_LOAD_CONF
+```
+
+### 6. Error Handling and Diagnostics
+
+**Add throughout the code**:
+```c
+void print_openssl_errors(void)
+{
+    unsigned long err;
+    while ((err = ERR_get_error()) != 0) {
+        char err_buf[256];
+        ERR_error_string_n(err, err_buf, sizeof(err_buf));
+        fprintf(stderr, "OpenSSL error: %s\n", err_buf);
+    }
+}
+
+// Call after each OpenSSL operation that might fail
+if (!some_openssl_function()) {
+    print_openssl_errors();
+    return -1;
+}
+```
+
+## Testing Instructions
+
+### 1. Test with Traditional Keys
+Verify the refactored code still works with standard PEM files:
+```bash
+sbsign --key private.pem --cert cert.pem --output signed.efi input.efi
+```
+
+### 2. Test with Engine
+Test with the Azure Key Vault engine:
+```bash
+export AZURE_CLI_ACCESS_TOKEN="your_token"
+export OPENSSL_ENGINES="/path/to/engine/directory"
+
+sbsign \
+  --engine e_akv \
+  --keyform engine \
+  --key "vault:your-keyvault:your-key" \
+  --cert certificate.pem \
+  --output signed.efi \
+  input.efi
+```
+
+### 3. Verify Signature
+```bash
+sbverify --cert cert.pem signed.efi
+```
+
+## Key Considerations
+
+1. **Backward Compatibility**: Ensure existing file-based key usage continues to work
+2. **Error Messages**: Provide clear error messages for engine-related failures
+3. **Documentation**: Update man pages and help text to document engine usage
+4. **Security**: Don't log sensitive engine parameters or key specifications
+5. **Memory Management**: Properly cleanup engine resources to prevent memory leaks
+
+## Expected Outcome
+
+After these changes, `sbsign` should support commands like:
+```bash
+sbsign --engine e_akv --keyform engine \
+       --key "vault:keyvault-name:key-name" \
+       --cert certificate.pem \
+       --output signed.efi input.efi
+```
+
+This enables secure UEFI signing with HSMs and cloud key services while maintaining the same signing output format and compatibility with existing verification tools.
