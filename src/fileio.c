@@ -46,6 +46,16 @@
 
 #include "fileio.h"
 
+static void print_openssl_errors(void)
+{
+	unsigned long err;
+	while ((err = ERR_get_error()) != 0) {
+		char err_buf[256];
+		ERR_error_string_n(err, err_buf, sizeof(err_buf));
+		fprintf(stderr, "OpenSSL error: %s\n", err_buf);
+	}
+}
+
 #define FLAG_NOERROR	(1<<0)
 
 static int ui_read(UI *ui, UI_STRING *uis)
@@ -71,21 +81,21 @@ EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename)
 
 	if (!e) {
 		fprintf(stderr, "Failed to load engine: %s\n", engine);
-		ERR_print_errors_fp(stderr);
+		print_openssl_errors();
 		return NULL;
 	}
 
 	ui = UI_create_method("sbsigntools");
 	if (!ui) {
 		fprintf(stderr, "Failed to create UI method\n");
-		ERR_print_errors_fp(stderr);
+		print_openssl_errors();
 		goto out_free;
 	}
 	UI_method_set_reader(ui, ui_read);
 
 	if (!ENGINE_init(e)) {
 		fprintf(stderr, "Failed to initialize engine %s\n", engine);
-		ERR_print_errors_fp(stderr);
+		print_openssl_errors();
 		goto out_free;
 	}
 
@@ -94,6 +104,26 @@ EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename)
 
  out_free:
 	ENGINE_free(e);
+	return pkey;
+}
+
+EVP_PKEY *fileio_read_pkey_engine(const char *filename, const char *engine, const char *keyform)
+{
+	EVP_PKEY *pkey = NULL;
+	
+	if (engine) {
+		// Load key using engine
+		if (keyform && strcmp(keyform, "engine") == 0) {
+			pkey = fileio_read_engine_key(engine, filename);
+		} else {
+			fprintf(stderr, "Warning: engine specified but keyform is not 'engine', using file-based loading\n");
+			pkey = fileio_read_pkey(filename);
+		}
+	} else {
+		// Traditional file-based key loading
+		pkey = fileio_read_pkey(filename);
+	}
+	
 	return pkey;
 }
 
@@ -112,7 +142,7 @@ out:
 	BIO_free_all(bio);
 	if (!key) {
 		fprintf(stderr, "Can't load key from file '%s'\n", filename);
-		ERR_print_errors_fp(stderr);
+		print_openssl_errors();
 	}
 	return key;
 }
@@ -133,7 +163,7 @@ out:
 	if (!cert) {
 		fprintf(stderr, "Can't load certificate from file '%s'\n",
 				filename);
-		ERR_print_errors_fp(stderr);
+		print_openssl_errors();
 	}
 	return cert;
 }

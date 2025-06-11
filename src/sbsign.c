@@ -51,6 +51,7 @@
 #include <openssl/asn1t.h>
 #include <openssl/bio.h>
 #include <openssl/x509.h>
+#include <openssl/engine.h>
 
 #include <ccan/talloc/talloc.h>
 
@@ -77,6 +78,7 @@ static struct option options[] = {
 	{ "help", no_argument, NULL, 'h' },
 	{ "version", no_argument, NULL, 'V' },
 	{ "engine", required_argument, NULL, 'e'},
+	{ "keyform", required_argument, NULL, 'f'},
 	{ "addcert", required_argument, NULL, 'a'},
 	{ NULL, 0, NULL, 0 },
 };
@@ -88,6 +90,7 @@ static void usage(void)
 		"Sign an EFI boot image for use with secure boot.\n\n"
 		"Options:\n"
 		"\t--engine <eng>     use the specified engine to load the key\n"
+		"\t--keyform <format> key format: PEM, DER, or engine\n"
 		"\t--key <keyfile>    signing key (PEM-encoded RSA "
 						"private key)\n"
 		"\t--cert <certfile>  certificate (x509 certificate)\n"
@@ -152,7 +155,7 @@ static int add_intermediate_certs(PKCS7 *p7, const char *filename)
 
 int main(int argc, char **argv)
 {
-	const char *keyfilename, *certfilename, *addcertfilename, *engine;
+	const char *keyfilename, *certfilename, *addcertfilename, *engine, *keyform;
 	struct sign_context *ctx;
 	uint8_t *buf, *tmp;
 	int rc, c, sigsize;
@@ -164,10 +167,11 @@ int main(int argc, char **argv)
 	certfilename = NULL;
 	addcertfilename = NULL;
 	engine = NULL;
+	keyform = "PEM";
 
 	for (;;) {
 		int idx;
-		c = getopt_long(argc, argv, "o:c:k:dvVhe:a:", options, &idx);
+		c = getopt_long(argc, argv, "o:c:k:dvVhe:f:a:", options, &idx);
 		if (c == -1)
 			break;
 
@@ -195,6 +199,9 @@ int main(int argc, char **argv)
 			return EXIT_SUCCESS;
 		case 'e':
 			engine = optarg;
+			break;
+		case 'f':
+			keyform = optarg;
 			break;
 		case 'a':
 			addcertfilename = optarg;
@@ -244,12 +251,29 @@ int main(int argc, char **argv)
 	 * module isn't present).  In either case ignore the errors
 	 * (malloc will cause other failures out lower down */
 	ERR_clear_error();
-	if (engine)
-		pkey = fileio_read_engine_key(engine, keyfilename);
-	else
-		pkey = fileio_read_pkey(keyfilename);
-	if (!pkey)
+	
+	// Initialize engines if needed
+	ENGINE *signing_engine = NULL;
+	if (engine) {
+		ENGINE_load_builtin_engines();
+		ENGINE_register_all_complete();
+		signing_engine = ENGINE_by_id(engine);
+		if (signing_engine) {
+			ENGINE_init(signing_engine);
+			// Set default engine for RSA operations during signing
+			ENGINE_set_default_RSA(signing_engine);
+			ENGINE_set_default(signing_engine, ENGINE_METHOD_ALL);
+		}
+	}
+	
+	pkey = fileio_read_pkey_engine(keyfilename, engine, keyform);
+	if (!pkey) {
+		if (signing_engine) {
+			ENGINE_finish(signing_engine);
+			ENGINE_free(signing_engine);
+		}
 		return EXIT_FAILURE;
+	}
 
 	X509 *cert = fileio_read_cert(certfilename);
 	if (!cert)
@@ -297,6 +321,13 @@ int main(int argc, char **argv)
 		image_write(ctx->image, ctx->outfilename);
 
 	talloc_free(ctx);
+
+	// Cleanup engines
+	if (signing_engine) {
+		ENGINE_finish(signing_engine);
+		ENGINE_free(signing_engine);
+		ENGINE_cleanup();
+	}
 
 	return EXIT_SUCCESS;
 }

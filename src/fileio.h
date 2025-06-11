@@ -39,6 +39,7 @@
 
 EVP_PKEY *fileio_read_pkey(const char *filename);
 EVP_PKEY *fileio_read_engine_key(const char *engine, const char *filename);
+EVP_PKEY *fileio_read_pkey_engine(const char *filename, const char *engine, const char *keyform);
 X509 *fileio_read_cert(const char *filename);
 
 int fileio_read_file(void *ctx, const char *filename,
