@@ -15,7 +15,7 @@
 
 stdenv.mkDerivation rec {
   pname = "sbsigntools";
-  version = "0.9.5";
+  version = "0.9.5-ssrc";
 
   src = if sbsigntoolsSrc != null then sbsigntoolsSrc else (builtins.filterSource (path: type: baseNameOf path != ".git") ./.);
 
