@@ -8,6 +8,18 @@ sbsigntool - Signing utility for UEFI secure boot
 
 See file ./INSTALL for building and installation instructions.
 
+For Nix users:
+  # Build the package
+  nix-build
+
+  # Enter development shell
+  nix-shell
+
+  # With flakes enabled
+  nix build
+  nix develop
+  nix run  # runs sbsign directly
+
 Original development was done at:
   git://kernel.ubuntu.com/jk/sbsigntool.git
 
