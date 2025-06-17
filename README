@@ -6,6 +6,33 @@ sbsigntool - Signing utility for UEFI secure boot
   are permitted in any medium without royalty provided the copyright
   notice and this notice are preserved.
 
+## Features
+
+This version includes enhanced OpenSSL engine support for secure signing:
+
+- **Hardware Security Module (HSM) Support**: Sign UEFI binaries using HSMs 
+  without exposing private keys locally
+- **Cloud Key Management**: Integration with cloud services like Azure Key Vault
+- **PKCS#11 Token Support**: Use smartcards and hardware tokens for signing
+- **Backward Compatibility**: Traditional file-based key operations remain unchanged
+
+### Engine Usage Examples
+
+Traditional file-based signing:
+  sbsign --key private.pem --cert cert.pem --output signed.efi input.efi
+
+HSM/Engine-based signing:
+  sbsign --engine e_akv --keyform engine \
+         --key "vault:keyvault-name:key-name" \
+         --cert certificate.pem \
+         --output signed.efi input.efi
+
+PKCS#11 token signing:
+  sbsign --engine pkcs11 --keyform engine \
+         --key "pkcs11:token=MyToken;object=MyKey" \
+         --cert certificate.pem \
+         --output signed.efi input.efi
+
 See file ./INSTALL for building and installation instructions.
 
 For Nix users:
