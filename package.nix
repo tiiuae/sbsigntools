@@ -122,7 +122,7 @@ EOF
     '';
     homepage = "https://git.kernel.org/pub/scm/linux/kernel/git/jejb/sbsigntools.git/";
     license = licenses.gpl3Plus;
-    platforms = [ "x86_64-linux" "i686-linux" "aarch64-linux" "armv7l-linux" ];
+    platforms = [ "x86_64-linux" "aarch64-linux" ];
     maintainers = with maintainers; [ ];
   };
 }
