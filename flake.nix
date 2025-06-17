@@ -12,7 +12,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         
         sbsigntools = pkgs.callPackage ./package.nix {
-          sbsigntoolsSrc = self;
+          sbsigntoolsSrc = null;
         };
       in
       {

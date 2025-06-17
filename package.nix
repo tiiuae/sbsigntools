@@ -9,6 +9,7 @@
 , gnu-efi
 , help2man
 , binutils-unwrapped
+, git
 , sbsigntoolsSrc ? null
 }:
 
@@ -16,7 +17,7 @@ stdenv.mkDerivation rec {
   pname = "sbsigntools";
   version = "0.9.5";
 
-  src = if sbsigntoolsSrc != null then sbsigntoolsSrc else ./.;
+  src = if sbsigntoolsSrc != null then sbsigntoolsSrc else (builtins.filterSource (path: type: baseNameOf path != ".git") ./.);
 
   # Fetch ccan submodule
   ccan = fetchgit {
@@ -26,6 +27,9 @@ stdenv.mkDerivation rec {
   };
 
   postUnpack = ''
+    # Create lib directory if it doesn't exist
+    mkdir -p $sourceRoot/lib
+    
     # Remove empty submodule directory if it exists
     if [ -d "$sourceRoot/lib/ccan.git" ]; then
       rm -rf $sourceRoot/lib/ccan.git
@@ -57,6 +61,7 @@ EOF
     autoreconfHook
     pkg-config
     help2man
+    git
   ];
 
   buildInputs = [
